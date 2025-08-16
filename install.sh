@@ -538,14 +538,8 @@ install_all_prereqs() {
   echoh "Finished attempting to install prerequisites."
 }
 
-# If the user runs this script with --install-prereqs or sets INSTALL_PREREQS=1
-# trigger the installers (defined above) and exit. This is non-destructive and
-# will try package managers first then fall back to instructions.
-if [ "${INSTALL_PREREQS-}" = "1" ] || [ "${1-}" = "--install-prereqs" ]; then
-  shift || true
-  install_all_prereqs
-  exit 0
-fi
+# The prereqs trigger will be evaluated after helper functions are declared
+#+ to avoid calling functions before they are defined.
 
   if [ "${RSH_ARGS-}" ]; then
     RSH="${RSH-ssh}"
