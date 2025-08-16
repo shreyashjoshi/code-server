@@ -447,172 +447,756 @@ install_npm() {
   exit 1
 }
 
-# Run $1 if we have a standalone otherwise run install_npm.
-npm_fallback() {
-  if has_standalone; then
-    $1
-  else
-    echoh "No standalone releases for $ARCH."
-    echoh "Falling back to installation from npm."
-    install_npm
+# --- Optional: Install prerequisites (opentofu, ansible, awscli) ---------
+install_opentofu() {
+  if command_exists opentofu; then
+    echoh "opentofu already installed"
+    return 0
   fi
+  echoh "Attempting to install OpenTofu..."
+  if command_exists brew; then
+    sh_c "brew install opentofu || true"
+    return 0
+  fi
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update && sudo_sh_c apt-get install -y opentofu || true
+    return 0
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y opentofu || true
+    return 0
+  fi
+  echoh "Please install OpenTofu from: https://github.com/opentofu/opentofu/releases"
+  return 1
 }
 
-# Determine if we have standalone releases on GitHub for the system's arch.
-has_standalone() {
-  case $ARCH in
-    arm64) return 0 ;;
-    # We only have arm64 for macOS.
-    amd64)
-      [ "$(distro)" != macos ]
-      return
-      ;;
-    *) return 1 ;;
-  esac
+install_ansible() {
+  if command_exists ansible; then
+    echoh "Ansible already installed"
+    return 0
+  fi
+  echoh "Installing Ansible..."
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update
+    sudo_sh_c apt-get install -y ansible || true
+    return 0
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y ansible || true
+    return 0
+  fi
+  if command_exists yum; then
+    sudo_sh_c yum install -y ansible || true
+    return 0
+  fi
+  if command_exists brew; then
+    sh_c "brew install ansible" || true
+    return 0
+  fi
+  if command_exists pip3; then
+    sh_c "pip3 install --user ansible-core" || true
+    return 0
+  fi
+  echoh "Please install Ansible manually: https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html"
+  return 1
 }
 
-os() {
-  uname="$(uname)"
-  case $uname in
-    Linux) echo linux ;;
-    Darwin) echo macos ;;
-    FreeBSD) echo freebsd ;;
-    *) echo "$uname" ;;
-  esac
+install_awscli() {
+  if command_exists aws; then
+    echoh "AWS CLI already installed"
+    return 0
+  fi
+  echoh "Installing AWS CLI..."
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update && sudo_sh_c apt-get install -y awscli || true
+    return 0
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y awscli || true
+    return 0
+  fi
+  if command_exists yum; then
+    sudo_sh_c yum install -y awscli || true
+    return 0
+  fi
+  if command_exists brew; then
+    sh_c "brew install awscli" || true
+    return 0
+  fi
+  if command_exists pip3; then
+    sh_c "pip3 install --user awscli" || true
+    return 0
+  fi
+  echoh "Please install AWS CLI manually: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+  return 1
 }
 
-# Print the detected Linux distro, otherwise print the OS name.
-#
-# Example outputs:
-# - macos -> macos
-# - freebsd -> freebsd
-# - ubuntu, raspbian, debian ... -> debian
-# - amzn, centos, rhel, fedora, ... -> fedora
-# - opensuse-{leap,tumbleweed} -> opensuse
-# - alpine -> alpine
-# - arch, manjaro, endeavouros, ... -> arch
-#
-# Inspired by https://github.com/docker/docker-install/blob/26ff363bcf3b3f5a00498ac43694bf1c7d9ce16c/install.sh#L111-L120.
-distro() {
-  if [ "$OS" = "macos" ] || [ "$OS" = "freebsd" ]; then
-    echo "$OS"
+install_all_prereqs() {
+  install_opentofu || true
+  install_ansible || true
+  install_awscli || true
+  echoh "Finished attempting to install prerequisites."
+}
+
+# If the user runs this script with --install-prereqs or sets INSTALL_PREREQS=1
+# trigger the installers (defined above) and exit. This is non-destructive and
+# will try package managers first then fall back to instructions.
+if [ "${INSTALL_PREREQS-}" = "1" ] || [ "${1-}" = "--install-prereqs" ]; then
+  shift || true
+  install_all_prereqs
+  exit 0
+fi
+
+  if [ "${RSH_ARGS-}" ]; then
+    RSH="${RSH-ssh}"
+    echoh "Installing remotely with $RSH $RSH_ARGS"
+    curl -fsSL https://code-server.dev/install.sh | prefix "$RSH_ARGS" "$RSH" "$RSH_ARGS" sh -s -- "$ALL_FLAGS"
     return
   fi
 
-  if [ -f /etc/os-release ]; then
-    (
-      . /etc/os-release
-      if [ "${ID_LIKE-}" ]; then
-        for id_like in $ID_LIKE; do
-          case "$id_like" in debian | fedora | opensuse | arch)
-            echo "$id_like"
-            return
-            ;;
-          esac
-        done
-      fi
-
-      echo "$ID"
-    )
-    return
-  fi
-}
-
-# Print a human-readable name for the OS/distro.
-distro_name() {
-  if [ "$(uname)" = "Darwin" ]; then
-    echo "macOS v$(sw_vers -productVersion)"
-    return
-  fi
-
-  if [ -f /etc/os-release ]; then
-    (
-      . /etc/os-release
-      echo "$PRETTY_NAME"
-    )
-    return
-  fi
-
-  # Prints something like: Linux 4.19.0-9-amd64
-  uname -sr
-}
-
-arch() {
-  uname_m=$(uname -m)
-  case $uname_m in
-    aarch64) echo arm64 ;;
-    x86_64) echo amd64 ;;
-    *) echo "$uname_m" ;;
-  esac
-}
-
-command_exists() {
-  if [ ! "$1" ]; then return 1; fi
-  command -v "$@" > /dev/null
-}
-
-sh_c() {
-  echoh "+ $*"
-  if [ ! "${DRY_RUN-}" ]; then
-    sh -c "$*"
-  fi
-}
-
-sudo_sh_c() {
-  if [ "$(id -u)" = 0 ]; then
-    sh_c "$@"
-  elif command_exists doas; then
-    sh_c "doas $*"
-  elif command_exists sudo; then
-    sh_c "sudo $*"
-  elif command_exists su; then
-    sh_c "su root -c '$*'"
-  else
-    echoh
-    echoerr "This script needs to run the following command as root."
-    echoerr "  $*"
-    echoerr "Please install doas, sudo, or su."
+  METHOD="${METHOD-detect}"
+  if [ "$METHOD" != detect ] && [ "$METHOD" != standalone ]; then
+    echoerr "Unknown install method \"$METHOD\""
+    echoerr "Run with --help to see usage."
     exit 1
   fi
-}
 
-echo_cache_dir() {
-  if [ "${XDG_CACHE_HOME-}" ]; then
-    echo "$XDG_CACHE_HOME/code-server"
-  elif [ "${HOME-}" ]; then
-    echo "$HOME/.cache/code-server"
-  else
-    echo "/tmp/code-server-cache"
+  # These are used by the various install_* functions that make use of GitHub
+  # releases in order to download and unpack the right release.
+  CACHE_DIR=$(echo_cache_dir)
+  STANDALONE_INSTALL_PREFIX=${STANDALONE_INSTALL_PREFIX:-$HOME/.local}
+  VERSION=${VERSION:-$(echo_latest_version)}
+  # These can be overridden for testing but shouldn't normally be used as it can
+  # result in a broken code-server.
+  OS=${OS:-$(os)}
+  ARCH=${ARCH:-$(arch)}
+
+  distro_name
+
+  # Standalone installs by pulling pre-built releases from GitHub.
+  if [ "$METHOD" = standalone ]; then
+    if has_standalone; then
+      install_standalone
+      echo_coder_postinstall
+      exit 0
+    else
+      echoerr "There are no standalone releases for $ARCH"
+      echoerr "Please try again without '--method standalone'"
+      exit 1
+    fi
   fi
+
+  # DISTRO can be overridden for testing but shouldn't normally be used as it
+  # can result in a broken code-server.
+  DISTRO=${DISTRO:-$(distro)}
+
+  case $DISTRO in
+    # macOS uses brew when available and falls back to standalone. We only have
+    # amd64 for macOS so for anything else use npm.
+    macos)
+      BREW_PATH="${BREW_PATH-brew}"
+      if command_exists "$BREW_PATH"; then
+        install_brew
+      else
+        echoh "Homebrew not installed."
+        echoh "Falling back to standalone installation."
+        npm_fallback install_standalone
+      fi
+      ;;
+    # The .deb and .rpm files are pulled from GitHub and we only have amd64 and
+    # arm64 there and need to fall back to npm otherwise.
+    debian) npm_fallback install_deb ;;
+    fedora | opensuse) npm_fallback install_rpm ;;
+    # Arch uses the AUR package which only supports amd64 and arm64 since it
+    # pulls releases from GitHub so we need to fall back to npm.
+    arch) npm_fallback install_aur ;;
+    # We don't have GitHub releases that work on Alpine or FreeBSD so we have no
+    # choice but to use npm here.
+    alpine | freebsd) install_npm ;;
+    # For anything else we'll try to install standalone but fall back to npm if
+    # we don't have releases for the architecture.
+    *)
+      echoh "Unsupported package manager."
+      echoh "Falling back to standalone installation."
+      npm_fallback install_standalone
+      ;;
+  esac
+
+  echo_coder_postinstall
 }
 
-echoh() {
-  echo "$@" | humanpath
+parse_arg() {
+  case "$1" in
+    *=*)
+      # Remove everything after first equal sign.
+      opt="${1%%=*}"
+      # Remove everything before first equal sign.
+      optarg="${1#*=}"
+      if [ ! "$optarg" ] && [ ! "${OPTIONAL-}" ]; then
+        echoerr "$opt requires an argument"
+        echoerr "Run with --help to see usage."
+        exit 1
+      fi
+      echo "$optarg"
+      return
+      ;;
+  esac
+
+  case "${2-}" in
+    "" | -*)
+      if [ ! "${OPTIONAL-}" ]; then
+        echoerr "$1 requires an argument"
+        echoerr "Run with --help to see usage."
+        exit 1
+      fi
+      ;;
+    *)
+      echo "$2"
+      return
+      ;;
+  esac
 }
 
-cath() {
-  humanpath
+fetch() {
+  URL="$1"
+  FILE="$2"
+
+  if [ -e "$FILE" ]; then
+    echoh "+ Reusing $FILE"
+    return
+  fi
+
+  sh_c mkdir -p "$CACHE_DIR"
+  sh_c curl \
+    -#fL \
+    -o "$FILE.incomplete" \
+    -C - \
+    "$URL"
+  sh_c mv "$FILE.incomplete" "$FILE"
 }
 
-echoerr() {
-  echoh "$@" >&2
+install_brew() {
+  echoh "Installing latest from Homebrew."
+  echoh
+
+  sh_c "$BREW_PATH" install code-server
+
+  echo_brew_postinstall
 }
 
-# humanpath replaces all occurrences of " $HOME" with " ~"
-# and all occurrences of '"$HOME' with the literal '"$HOME'.
-humanpath() {
-  sed "s# $HOME# ~#g; s#\"$HOME#\"\$HOME#g"
+install_deb() {
+  echoh "Installing v$VERSION of the $ARCH deb package from GitHub."
+  echoh
+
+  fetch "https://github.com/coder/code-server/releases/download/v$VERSION/code-server_${VERSION}_$ARCH.deb" \
+    "$CACHE_DIR/code-server_${VERSION}_$ARCH.deb"
+  sudo_sh_c dpkg -i "$CACHE_DIR/code-server_${VERSION}_$ARCH.deb"
+
+  echo_systemd_postinstall deb
 }
 
-# We need to make sure we exit with a non zero exit if the command fails.
-# /bin/sh does not support -o pipefail unfortunately.
-prefix() {
-  PREFIX="$1"
-  shift
-  fifo="$(mktemp -d)/fifo"
-  mkfifo "$fifo"
-  sed -e "s#^#$PREFIX: #" "$fifo" &
-  "$@" > "$fifo" 2>&1
+install_rpm() {
+  echoh "Installing v$VERSION of the $ARCH rpm package from GitHub."
+  echoh
+
+  fetch "https://github.com/coder/code-server/releases/download/v$VERSION/code-server-$VERSION-$ARCH.rpm" \
+    "$CACHE_DIR/code-server-$VERSION-$ARCH.rpm"
+  sudo_sh_c rpm -U "$CACHE_DIR/code-server-$VERSION-$ARCH.rpm"
+
+  echo_systemd_postinstall rpm
 }
 
-main "$@"
+install_aur() {
+  echoh "Installing latest from the AUR."
+  echoh
+
+  sh_c mkdir -p "$CACHE_DIR/code-server-aur"
+  sh_c "curl -#fsSL https://aur.archlinux.org/cgit/aur.git/snapshot/code-server.tar.gz | tar -xzC $CACHE_DIR/code-server-aur --strip-components 1"
+  echo "+ cd $CACHE_DIR/code-server-aur"
+  if [ ! "${DRY_RUN-}" ]; then
+    cd "$CACHE_DIR/code-server-aur"
+  fi
+  sh_c makepkg -si --noconfirm
+
+  echo_systemd_postinstall AUR
+}
+
+install_standalone() {
+  echoh "Installing v$VERSION of the $ARCH release from GitHub."
+  echoh
+
+  fetch "https://github.com/coder/code-server/releases/download/v$VERSION/code-server-$VERSION-$OS-$ARCH.tar.gz" \
+    "$CACHE_DIR/code-server-$VERSION-$OS-$ARCH.tar.gz"
+
+  # -w only works if the directory exists so try creating it first. If this
+  # fails we can ignore the error as the -w check will then swap us to sudo.
+  sh_c mkdir -p "$STANDALONE_INSTALL_PREFIX" 2> /dev/null || true
+
+  sh_c="sh_c"
+  if [ ! -w "$STANDALONE_INSTALL_PREFIX" ]; then
+    sh_c="sudo_sh_c"
+  fi
+
+  if [ -e "$STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION" ]; then
+    echoh
+    echoh "code-server-$VERSION is already installed at $STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION"
+    echoh "Remove it to reinstall."
+    exit 0
+  fi
+
+  "$sh_c" mkdir -p "$STANDALONE_INSTALL_PREFIX/lib" "$STANDALONE_INSTALL_PREFIX/bin"
+  "$sh_c" tar -C "$STANDALONE_INSTALL_PREFIX/lib" -xzf "$CACHE_DIR/code-server-$VERSION-$OS-$ARCH.tar.gz"
+  "$sh_c" mv -f "$STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION-$OS-$ARCH" "$STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION"
+  "$sh_c" ln -fs "$STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION/bin/code-server" "$STANDALONE_INSTALL_PREFIX/bin/code-server"
+
+  echo_standalone_postinstall
+}
+
+install_npm() {
+  echoh "Installing v$VERSION from npm."
+  echoh
+
+  NPM_PATH="${YARN_PATH-npm}"
+
+  if command_exists "$NPM_PATH"; then
+    sh_c="sh_c"
+    if [ ! "${DRY_RUN-}" ] && [ ! -w "$(NPM_PATH config get prefix)" ]; then
+      sh_c="sudo_sh_c"
+    fi
+    echoh "Installing with npm."
+    echoh
+    "$sh_c" "$NPM_PATH" install -g "code-server@$VERSION" --unsafe-perm
+    NPM_BIN_DIR="\$($NPM_PATH bin -g)" echo_npm_postinstall
+    return
+  fi
+  echoerr "Please install npm to install code-server!"
+  echoerr "You will need at least node v20 and a few C dependencies."
+  echoerr "See the docs https://coder.com/docs/code-server/latest/install#npm"
+
+  exit 1
+}
+
+# --- Additional installers for dependencies ---------------------------------
+
+install_opentofu() {
+  if command_exists opentofu; then
+    echoh "opentofu already installed"
+    return 0
+  fi
+  echoh "Attempting to install OpenTofu..."
+
+  # Prefer Homebrew, apt, dnf if available
+  if command_exists brew; then
+    sh_c "brew install opentofu || brew install --cask opentofu || true"
+    return 0
+  fi
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update && sudo_sh_c apt-get install -y opentofu && return 0 || true
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y opentofu && return 0 || true
+  fi
+
+  # Fallback: prompt user to install from releases
+  echoh "Could not install OpenTofu automatically."
+  echoh "Please install it from: https://github.com/opentofu/opentofu/releases"
+  return 1
+}
+
+install_ansible() {
+  if command_exists ansible; then
+    echoh "Ansible already installed"
+    return 0
+  fi
+  echoh "Installing Ansible..."
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update
+    sudo_sh_c apt-get install -y software-properties-common
+    sudo_sh_c apt-add-repository --yes --update ppa:ansible/ansible || true
+    sudo_sh_c apt-get install -y ansible && return 0 || true
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y ansible && return 0 || true
+  fi
+  if command_exists yum; then
+    sudo_sh_c yum install -y ansible && return 0 || true
+  fi
+  if command_exists brew; then
+    sh_c "brew install ansible" && return 0 || true
+  fi
+  if command_exists pip3; then
+    sh_c "pip3 install --user ansible-core" && return 0 || true
+  fi
+
+  echoh "Please install Ansible manually: https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html"
+  return 1
+}
+
+install_awscli() {
+  if command_exists aws; then
+    echoh "AWS CLI already installed"
+    return 0
+  fi
+  echoh "Installing AWS CLI..."
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update && sudo_sh_c apt-get install -y awscli && return 0 || true
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y awscli && return 0 || true
+  fi
+  if command_exists yum; then
+    sudo_sh_c yum install -y awscli && return 0 || true
+  fi
+  if command_exists brew; then
+    sh_c "brew install awscli" && return 0 || true
+  fi
+  if command_exists pip3; then
+    sh_c "pip3 install --user awscli" && return 0 || true
+  fi
+
+  echoh "Please install AWS CLI manually: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+  return 1
+}
+
+install_all_prereqs() {
+  install_opentofu || true
+  install_ansible || true
+  install_awscli || true
+  echoh "Finished attempting to install prerequisites."
+}
+
+# If the user runs this script with --install-prereqs or sets INSTALL_PREREQS=1
+# trigger the installers (defined above) and exit. This is non-destructive and
+# will try package managers first then fall back to instructions.
+if [ "${INSTALL_PREREQS-}" = "1" ] || [ "${1-}" = "--install-prereqs" ]; then
+  shift || true
+  install_all_prereqs
+  exit 0
+fi
+
+  if [ "${RSH_ARGS-}" ]; then
+    RSH="${RSH-ssh}"
+    echoh "Installing remotely with $RSH $RSH_ARGS"
+    curl -fsSL https://code-server.dev/install.sh | prefix "$RSH_ARGS" "$RSH" "$RSH_ARGS" sh -s -- "$ALL_FLAGS"
+    return
+  fi
+
+  METHOD="${METHOD-detect}"
+  if [ "$METHOD" != detect ] && [ "$METHOD" != standalone ]; then
+    echoerr "Unknown install method \"$METHOD\""
+    echoerr "Run with --help to see usage."
+    exit 1
+  fi
+
+  # These are used by the various install_* functions that make use of GitHub
+  # releases in order to download and unpack the right release.
+  CACHE_DIR=$(echo_cache_dir)
+  STANDALONE_INSTALL_PREFIX=${STANDALONE_INSTALL_PREFIX:-$HOME/.local}
+  VERSION=${VERSION:-$(echo_latest_version)}
+  # These can be overridden for testing but shouldn't normally be used as it can
+  # result in a broken code-server.
+  OS=${OS:-$(os)}
+  ARCH=${ARCH:-$(arch)}
+
+  distro_name
+
+  # Standalone installs by pulling pre-built releases from GitHub.
+  if [ "$METHOD" = standalone ]; then
+    if has_standalone; then
+      install_standalone
+      echo_coder_postinstall
+      exit 0
+    else
+      echoerr "There are no standalone releases for $ARCH"
+      echoerr "Please try again without '--method standalone'"
+      exit 1
+    fi
+  fi
+
+  # DISTRO can be overridden for testing but shouldn't normally be used as it
+  # can result in a broken code-server.
+  DISTRO=${DISTRO:-$(distro)}
+
+  case $DISTRO in
+    # macOS uses brew when available and falls back to standalone. We only have
+    # amd64 for macOS so for anything else use npm.
+    macos)
+      BREW_PATH="${BREW_PATH-brew}"
+      if command_exists "$BREW_PATH"; then
+        install_brew
+      else
+        echoh "Homebrew not installed."
+        echoh "Falling back to standalone installation."
+        npm_fallback install_standalone
+      fi
+      ;;
+    # The .deb and .rpm files are pulled from GitHub and we only have amd64 and
+    # arm64 there and need to fall back to npm otherwise.
+    debian) npm_fallback install_deb ;;
+    fedora | opensuse) npm_fallback install_rpm ;;
+    # Arch uses the AUR package which only supports amd64 and arm64 since it
+    # pulls releases from GitHub so we need to fall back to npm.
+    arch) npm_fallback install_aur ;;
+    # We don't have GitHub releases that work on Alpine or FreeBSD so we have no
+    # choice but to use npm here.
+    alpine | freebsd) install_npm ;;
+    # For anything else we'll try to install standalone but fall back to npm if
+    # we don't have releases for the architecture.
+    *)
+      echoh "Unsupported package manager."
+      echoh "Falling back to standalone installation."
+      npm_fallback install_standalone
+      ;;
+  esac
+
+  echo_coder_postinstall
+}
+
+parse_arg() {
+  case "$1" in
+    *=*)
+      # Remove everything after first equal sign.
+      opt="${1%%=*}"
+      # Remove everything before first equal sign.
+      optarg="${1#*=}"
+      if [ ! "$optarg" ] && [ ! "${OPTIONAL-}" ]; then
+        echoerr "$opt requires an argument"
+        echoerr "Run with --help to see usage."
+        exit 1
+      fi
+      echo "$optarg"
+      return
+      ;;
+  esac
+
+  case "${2-}" in
+    "" | -*)
+      if [ ! "${OPTIONAL-}" ]; then
+        echoerr "$1 requires an argument"
+        echoerr "Run with --help to see usage."
+        exit 1
+      fi
+      ;;
+    *)
+      echo "$2"
+      return
+      ;;
+  esac
+}
+
+fetch() {
+  URL="$1"
+  FILE="$2"
+
+  if [ -e "$FILE" ]; then
+    echoh "+ Reusing $FILE"
+    return
+  fi
+
+  sh_c mkdir -p "$CACHE_DIR"
+  sh_c curl \
+    -#fL \
+    -o "$FILE.incomplete" \
+    -C - \
+    "$URL"
+  sh_c mv "$FILE.incomplete" "$FILE"
+}
+
+install_brew() {
+  echoh "Installing latest from Homebrew."
+  echoh
+
+  sh_c "$BREW_PATH" install code-server
+
+  echo_brew_postinstall
+}
+
+install_deb() {
+  echoh "Installing v$VERSION of the $ARCH deb package from GitHub."
+  echoh
+
+  fetch "https://github.com/coder/code-server/releases/download/v$VERSION/code-server_${VERSION}_$ARCH.deb" \
+    "$CACHE_DIR/code-server_${VERSION}_$ARCH.deb"
+  sudo_sh_c dpkg -i "$CACHE_DIR/code-server_${VERSION}_$ARCH.deb"
+
+  echo_systemd_postinstall deb
+}
+
+install_rpm() {
+  echoh "Installing v$VERSION of the $ARCH rpm package from GitHub."
+  echoh
+
+  fetch "https://github.com/coder/code-server/releases/download/v$VERSION/code-server-$VERSION-$ARCH.rpm" \
+    "$CACHE_DIR/code-server-$VERSION-$ARCH.rpm"
+  sudo_sh_c rpm -U "$CACHE_DIR/code-server-$VERSION-$ARCH.rpm"
+
+  echo_systemd_postinstall rpm
+}
+
+install_aur() {
+  echoh "Installing latest from the AUR."
+  echoh
+
+  sh_c mkdir -p "$CACHE_DIR/code-server-aur"
+  sh_c "curl -#fsSL https://aur.archlinux.org/cgit/aur.git/snapshot/code-server.tar.gz | tar -xzC $CACHE_DIR/code-server-aur --strip-components 1"
+  echo "+ cd $CACHE_DIR/code-server-aur"
+  if [ ! "${DRY_RUN-}" ]; then
+    cd "$CACHE_DIR/code-server-aur"
+  fi
+  sh_c makepkg -si --noconfirm
+
+  echo_systemd_postinstall AUR
+}
+
+install_standalone() {
+  echoh "Installing v$VERSION of the $ARCH release from GitHub."
+  echoh
+
+  fetch "https://github.com/coder/code-server/releases/download/v$VERSION/code-server-$VERSION-$OS-$ARCH.tar.gz" \
+    "$CACHE_DIR/code-server-$VERSION-$OS-$ARCH.tar.gz"
+
+  # -w only works if the directory exists so try creating it first. If this
+  # fails we can ignore the error as the -w check will then swap us to sudo.
+  sh_c mkdir -p "$STANDALONE_INSTALL_PREFIX" 2> /dev/null || true
+
+  sh_c="sh_c"
+  if [ ! -w "$STANDALONE_INSTALL_PREFIX" ]; then
+    sh_c="sudo_sh_c"
+  fi
+
+  if [ -e "$STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION" ]; then
+    echoh
+    echoh "code-server-$VERSION is already installed at $STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION"
+    echoh "Remove it to reinstall."
+    exit 0
+  fi
+
+  "$sh_c" mkdir -p "$STANDALONE_INSTALL_PREFIX/lib" "$STANDALONE_INSTALL_PREFIX/bin"
+  "$sh_c" tar -C "$STANDALONE_INSTALL_PREFIX/lib" -xzf "$CACHE_DIR/code-server-$VERSION-$OS-$ARCH.tar.gz"
+  "$sh_c" mv -f "$STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION-$OS-$ARCH" "$STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION"
+  "$sh_c" ln -fs "$STANDALONE_INSTALL_PREFIX/lib/code-server-$VERSION/bin/code-server" "$STANDALONE_INSTALL_PREFIX/bin/code-server"
+
+  echo_standalone_postinstall
+}
+
+install_npm() {
+  echoh "Installing v$VERSION from npm."
+  echoh
+
+  NPM_PATH="${YARN_PATH-npm}"
+
+  if command_exists "$NPM_PATH"; then
+    sh_c="sh_c"
+    if [ ! "${DRY_RUN-}" ] && [ ! -w "$(NPM_PATH config get prefix)" ]; then
+      sh_c="sudo_sh_c"
+    fi
+    echoh "Installing with npm."
+    echoh
+    "$sh_c" "$NPM_PATH" install -g "code-server@$VERSION" --unsafe-perm
+    NPM_BIN_DIR="\$($NPM_PATH bin -g)" echo_npm_postinstall
+    return
+  fi
+  echoerr "Please install npm to install code-server!"
+  echoerr "You will need at least node v20 and a few C dependencies."
+  echoerr "See the docs https://coder.com/docs/code-server/latest/install#npm"
+
+  exit 1
+}
+
+# --- Additional installers for dependencies ---------------------------------
+
+install_opentofu() {
+  if command_exists opentofu; then
+    echoh "opentofu already installed"
+    return 0
+  fi
+  echoh "Attempting to install OpenTofu..."
+
+  # Prefer Homebrew, apt, dnf if available
+  if command_exists brew; then
+    sh_c "brew install opentofu || brew install --cask opentofu || true"
+    return 0
+  fi
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update && sudo_sh_c apt-get install -y opentofu && return 0 || true
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y opentofu && return 0 || true
+  fi
+
+  # Fallback: prompt user to install from releases
+  echoh "Could not install OpenTofu automatically."
+  echoh "Please install it from: https://github.com/opentofu/opentofu/releases"
+  return 1
+}
+
+install_ansible() {
+  if command_exists ansible; then
+    echoh "Ansible already installed"
+    return 0
+  fi
+  echoh "Installing Ansible..."
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update
+    sudo_sh_c apt-get install -y software-properties-common
+    sudo_sh_c apt-add-repository --yes --update ppa:ansible/ansible || true
+    sudo_sh_c apt-get install -y ansible && return 0 || true
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y ansible && return 0 || true
+  fi
+  if command_exists yum; then
+    sudo_sh_c yum install -y ansible && return 0 || true
+  fi
+  if command_exists brew; then
+    sh_c "brew install ansible" && return 0 || true
+  fi
+  if command_exists pip3; then
+    sh_c "pip3 install --user ansible-core" && return 0 || true
+  fi
+
+  echoh "Please install Ansible manually: https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html"
+  return 1
+}
+
+install_awscli() {
+  if command_exists aws; then
+    echoh "AWS CLI already installed"
+    return 0
+  fi
+  echoh "Installing AWS CLI..."
+  if command_exists apt-get; then
+    sudo_sh_c apt-get update && sudo_sh_c apt-get install -y awscli && return 0 || true
+  fi
+  if command_exists dnf; then
+    sudo_sh_c dnf install -y awscli && return 0 || true
+  fi
+  if command_exists yum; then
+    sudo_sh_c yum install -y awscli && return 0 || true
+  fi
+  if command_exists brew; then
+    sh_c "brew install awscli" && return 0 || true
+  fi
+  if command_exists pip3; then
+    sh_c "pip3 install --user awscli" && return 0 || true
+  fi
+
+  echoh "Please install AWS CLI manually: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+  return 1
+}
+
+install_all_prereqs() {
+  install_opentofu || true
+  install_ansible || true
+  install_awscli || true
+  echoh "Finished attempting to install prerequisites."
+}
+
+# If the user runs this script with --install-prereqs or sets INSTALL_PREREQS=1
+# trigger the installers (defined above) and exit. This is non-destructive and
+# will try package managers first then fall back to instructions.
+if [ "${INSTALL_PREREQS-}" = "1" ] || [ "${1-}" = "--install-prereqs" ]; then
+  shift || true
+  install_all_prereqs
+  exit 0
+fi
