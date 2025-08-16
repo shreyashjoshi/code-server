@@ -1,6 +1,78 @@
 #!/bin/sh
 set -eu
 
+# Print a message to stdout (with optional formatting)
+echoh() {
+  echo "$@"
+}
+
+# Print heredoc to stdout (cat heredoc)
+cath() {
+  cat
+}
+
+# Run a command, echo it first
+sh_c() {
+  echo "+ $*"
+  "$@"
+}
+
+# Run a command with sudo, echo it first
+sudo_sh_c() {
+  echo "+ sudo $*"
+  sudo "$@"
+}
+# Tries the given install function, falls back to install_npm if it fails
+npm_fallback() {
+  if ! "$1"; then
+    install_npm
+  fi
+}
+# Stub for distro_name (no-op)
+distro_name() {
+  :
+}
+# Returns the OS name (linux, macos, etc.)
+os() {
+  case "$(uname -s)" in
+    Linux*)   echo "linux" ;;
+    Darwin*)  echo "macos" ;;
+    *)        echo "unknown" ;;
+  esac
+}
+
+# Returns the architecture (amd64, arm64, etc.)
+arch() {
+  case "$(uname -m)" in
+    x86_64)   echo "amd64" ;;
+    aarch64)  echo "arm64" ;;
+    armv7l)   echo "armv7l" ;;
+    *)        echo "unknown" ;;
+  esac
+}
+
+# Returns the Linux distribution (debian, fedora, arch, etc.)
+distro() {
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    case "$ID" in
+      debian|ubuntu|raspbian) echo "debian" ;;
+      fedora) echo "fedora" ;;
+      opensuse*) echo "opensuse" ;;
+      arch) echo "arch" ;;
+      alpine) echo "alpine" ;;
+      freebsd) echo "freebsd" ;;
+      *) echo "unknown" ;;
+    esac
+  else
+    echo "unknown"
+  fi
+}
+# Returns the cache directory for code-server downloads
+echo_cache_dir() {
+  echo "${XDG_CACHE_HOME:-$HOME/.cache}/code-server"
+}
+
 # code-server's automatic install script.
 # See https://coder.com/docs/code-server/latest/install
 
@@ -294,7 +366,6 @@ main() {
   esac
 
   echo_coder_postinstall
-}
 
 parse_arg() {
   case "$1" in
@@ -617,7 +688,6 @@ install_all_prereqs() {
   esac
 
   echo_coder_postinstall
-}
 
 parse_arg() {
   case "$1" in
